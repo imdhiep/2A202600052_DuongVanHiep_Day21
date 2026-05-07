@@ -1,0 +1,5 @@
+[core]
+    remote = storage
+['remote "storage"']
+    url = gs://vinuni-mlops-lab-2026/data
+    credentialpath = ../sa-key.json
