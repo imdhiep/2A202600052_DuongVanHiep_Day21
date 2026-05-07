@@ -3,82 +3,88 @@ from pydantic import BaseModel
 from google.cloud import storage
 import joblib
 import os
+import numpy as np
 
 app = FastAPI()
 
-GCS_BUCKET = os.environ["GCS_BUCKET"]
-GCS_MODEL_KEY = "models/latest/model.pkl"
-MODEL_PATH = os.path.expanduser("~/models/model.pkl")
+# Thong tin cau hinh tu bien moi truong
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "vinuni-mlops-lab-2026")
+MODEL_KEY = "models/latest/model.pkl"
+SCALER_KEY = "models/latest/scaler.pkl"
 
+MODEL_PATH = "model.pkl"
+SCALER_PATH = "scaler.pkl"
 
-def download_model():
+def download_from_gcs():
     """
-    Tai file model.pkl tu GCS ve may khi server khoi dong.
-
-    Ham nay duoc goi mot lan khi module duoc import. Su dung
-    GOOGLE_APPLICATION_CREDENTIALS de xac thuc (duoc dat trong systemd service).
+    Tai model va scaler tu Google Cloud Storage ve thu muc local.
     """
-    # TODO 1: Tao storage.Client()
-    # client = storage.Client()
+    try:
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        
+        # Tai file model
+        blob_model = bucket.blob(MODEL_KEY)
+        blob_model.download_to_filename(MODEL_PATH)
+        
+        # Tai file scaler
+        blob_scaler = bucket.blob(SCALER_KEY)
+        blob_scaler.download_to_filename(SCALER_PATH)
+        
+        print(f"Thanh cong: Da tai model va scaler tu bucket {GCS_BUCKET}")
+    except Exception as e:
+        print(f"Canh bao: Khong the tai file tu GCS (co the dang chay local): {e}")
 
-    # TODO 2: Lay bucket va blob tuong ung
-    # bucket = client.bucket(GCS_BUCKET)
-    # blob   = bucket.blob(GCS_MODEL_KEY)
+# Tu dong tai file khi khoi dong neu chua co
+if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
+    download_from_gcs()
 
-    # TODO 3: Tai file model xuong may
-    # blob.download_to_filename(MODEL_PATH)
-
-    # TODO 4: In thong bao thanh cong
-    # print("Model da duoc tai xuong tu GCS.")
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
-
-
-download_model()
-model = joblib.load(MODEL_PATH)
-
+# Load model va scaler vao bo nho
+try:
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+except Exception as e:
+    print(f"Loi: Khong the load model/scaler: {e}")
+    model = None
+    scaler = None
 
 class PredictRequest(BaseModel):
     features: list[float]
 
-
 @app.get("/health")
 def health():
-    """
-    Endpoint kiem tra suc khoe server.
-    GitHub Actions goi endpoint nay sau khi deploy de xac nhan server dang chay.
-
-    Tra ve: {"status": "ok"}
-    """
-    # TODO 5: Tra ve dict {"status": "ok"}
-    pass  # xoa dong nay sau khi hoan thanh
-
+    """Endpoint kiem tra trang thai server."""
+    return {"status": "ok"}
 
 @app.post("/predict")
 def predict(req: PredictRequest):
-    """
-    Endpoint suy luan chinh.
+    """Endpoint du doan chat luong ruou."""
+    if model is None or scaler is None:
+        raise HTTPException(status_code=500, detail="Model hoac Scaler chua duoc tai len server.")
+    
+    if len(req.features) != 12:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Yeu cau 12 dac trung, nhung nhan duoc {len(req.features)}"
+        )
 
-    Dau vao : JSON {"features": [f1, f2, ..., f12]}
-    Dau ra  : JSON {"prediction": <0|1|2>, "label": <"thap"|"trung_binh"|"cao">}
-
-    Thu tu 12 dac trung (khop voi thu tu trong FEATURE_NAMES cua test):
-        fixed_acidity, volatile_acidity, citric_acid, residual_sugar,
-        chlorides, free_sulfur_dioxide, total_sulfur_dioxide, density,
-        pH, sulphates, alcohol, wine_type
-    """
-    # TODO 6: Kiem tra so luong dac trung.
-    # Neu len(req.features) != 12, raise HTTPException(status_code=400, ...)
-
-    # TODO 7: Goi model.predict([req.features]) de lay ket qua du doan.
-    # pred = model.predict(...)
-
-    # TODO 8: Tra ve dict chua "prediction" (int) va "label" (string).
-    # Nhan tuong ung: 0 -> "thap", 1 -> "trung_binh", 2 -> "cao"
-    # return {"prediction": ..., "label": ...}
-
-    pass  # xoa dong nay sau khi hoan thanh tat ca TODO ben tren
-
+    try:
+        # 1. Chuyen sang array va chuan hoa
+        data = np.array(req.features).reshape(1, -1)
+        data_scaled = scaler.transform(data)
+        
+        # 2. Du doan
+        prediction = int(model.predict(data_scaled)[0])
+        
+        # 3. Map nhan ket qua
+        labels = {0: "thap", 1: "trung_binh", 2: "cao"}
+        
+        return {
+            "prediction": prediction,
+            "label": labels.get(prediction, "unknown")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Loi trong qua trinh du doan: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
